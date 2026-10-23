@@ -27,6 +27,16 @@ class SSEHub {
     }
 
     /**
+     * Allows to skip preparing the data for an event nobody would receive
+     *
+     * @public
+     * @returns {boolean}
+     */
+    hasClients() {
+        return this.clients.size > 0;
+    }
+
+    /**
      *
      * Multi-line strings shall be split and fed into this method line-by-line to be parsable by the frontend
      *

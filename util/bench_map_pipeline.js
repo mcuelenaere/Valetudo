@@ -20,9 +20,10 @@
     Cases:
         parse/<fixture>      miio decode -> PREPROCESS (base64 + inflate) -> PARSE
         parse_path/<n>       DreameMapParser.PARSE_PATH for a trace string with n points
-        listeners/<map>      everything that is hooked onto MapUpdated, as it is today:
-                                 webserver SSE (state + map, evaluated even without clients),
+        listeners/<map>      everything that is hooked onto MapUpdated:
+                                 webserver SSE (state + map, only if clients are connected: none here),
                                  MQTT map-data + map-data-hass + the dedup hashing in MqttController.publish()
+        sse_client/<map>     the SSE part again, but with the web interface open (one client per stream)
         mqtt_opt/<map>       MQTT only, one shared stringify + deflate, native zlib.crc32
         micro/<map>          the individual building blocks (stringify, deflate, crc, sha1)
 
@@ -625,12 +626,16 @@ function buildDownstreamCases(mapSpecs) {
                         // MapNodeMqttHandle#onMapUpdated() drops what it cached of the previous map
                         mapHandle.deflatedMapData = null;
 
-                        // RobotRouter: onStateUpdated + onMapUpdated. The arguments are evaluated even if nobody listens
+                        // RobotRouter: onStateUpdated + onMapUpdated. Nothing is serialized if nobody is connected
                         await lap("sse_state", () => {
-                            stateHub.event("StateUpdated", JSON.stringify(state));
+                            if (stateHub.hasClients()) {
+                                stateHub.event("StateUpdated", JSON.stringify(state));
+                            }
                         });
                         await lap("sse_map", () => {
-                            mapHub.event("MapUpdated", JSON.stringify(state.map));
+                            if (mapHub.hasClients()) {
+                                mapHub.event("MapUpdated", JSON.stringify(state.map));
+                            }
                         });
 
                         // MapNodeMqttHandle#refresh(): map-data, map-data-hass
@@ -644,6 +649,36 @@ function buildDownstreamCases(mapSpecs) {
                         await lap("mqtt_dedupe", () => {
                             cache.update("valetudo/robot/MapData/map-data", mapData);
                             cache.update("valetudo/robot/MapData/map-data-hass", mapDataHass);
+                        });
+                    }
+                };
+            }
+        });
+
+        // What the above costs additionally while someone has the web interface open
+        cases.push({
+            name: `sse_client/${spec.name}`,
+            setup: async () => {
+                const {state, params} = await prepare(spec);
+                const stateHub = new SSEHub({name: "State"});
+                const mapHub = new SSEHub({name: "Map"});
+
+                // The cost of the socket itself is not part of this
+                stateHub.register({write: () => {}});
+                mapHub.register({write: () => {}});
+
+                return {
+                    params: params,
+                    iteration: async (lap) => {
+                        await lap("sse_state", () => {
+                            if (stateHub.hasClients()) {
+                                stateHub.event("StateUpdated", JSON.stringify(state));
+                            }
+                        });
+                        await lap("sse_map", () => {
+                            if (mapHub.hasClients()) {
+                                mapHub.event("MapUpdated", JSON.stringify(state.map));
+                            }
                         });
                     }
                 };

@@ -80,25 +80,34 @@ class RobotRouter {
             map: new SSEHub({name: "Map"})
         };
 
+        /*
+            Serializing the state and especially the map is expensive, so that is only done if there is someone listening
+         */
         this.robot.onStateUpdated(() => {
-            this.sseHubs.state.event(
-                ValetudoRobot.EVENTS.StateUpdated,
-                JSON.stringify(this.robot.state)
-            );
+            if (this.sseHubs.state.hasClients()) {
+                this.sseHubs.state.event(
+                    ValetudoRobot.EVENTS.StateUpdated,
+                    JSON.stringify(this.robot.state)
+                );
+            }
         });
 
         this.robot.onStateAttributesUpdated(() => {
-            this.sseHubs.attributes.event(
-                ValetudoRobot.EVENTS.StateAttributesUpdated,
-                JSON.stringify(this.robot.state.attributes)
-            );
+            if (this.sseHubs.attributes.hasClients()) {
+                this.sseHubs.attributes.event(
+                    ValetudoRobot.EVENTS.StateAttributesUpdated,
+                    JSON.stringify(this.robot.state.attributes)
+                );
+            }
         });
 
         this.robot.onMapUpdated(() => {
-            this.sseHubs.map.event(
-                ValetudoRobot.EVENTS.MapUpdated,
-                JSON.stringify(this.robot.state.map)
-            );
+            if (this.sseHubs.map.hasClients()) {
+                this.sseHubs.map.event(
+                    ValetudoRobot.EVENTS.MapUpdated,
+                    JSON.stringify(this.robot.state.map)
+                );
+            }
         });
 
         this.router.get(
