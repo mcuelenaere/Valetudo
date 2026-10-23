@@ -21,7 +21,7 @@ class MapLayer extends SerializableEntity {
      *
      * @param {object} options
      * @param {MapLayerType} options.type
-     * @param {Array<number>} options.pixels These have to be sorted for the compression to work. Unsorted pixel compressed maps will become larger than uncompressed ones
+     * @param {Array<number>|Int32Array} options.pixels These have to be sorted for the compression to work. Unsorted pixel compressed maps will become larger than uncompressed ones
      * @param {object} [options.metaData]
      * @param {number} [options.metaData.area] in cm²
      * @param {string} [options.metaData.segmentId]
@@ -45,7 +45,7 @@ class MapLayer extends SerializableEntity {
     }
 
     /**
-     * @param {Array<number>} pixels
+     * @param {Array<number>|Int32Array} pixels
      * @private
      */
     calculateDimensions(pixels) {
@@ -117,7 +117,7 @@ class MapLayer extends SerializableEntity {
     }
 
     /**
-     * @param {Array<number>} pixels
+     * @param {Array<number>|Int32Array} pixels
      * @private
      */
     compressPixels(pixels) {

@@ -500,135 +500,135 @@ class DreameMapParser {
         return parsedHeader;
     }
 
+    /**
+     * This is called for every map update, so it is written to not allocate anything per pixel.
+     * Pixels end up in their layers sorted by y first and x second (both ascending), which is what
+     * MapLayer requires for its compression.
+     *
+     * @param {any} parsedHeader
+     * @param {Array<string>} activeSegmentIds
+     * @param {any} segmentNames
+     * @param {any} segmentMaterials
+     * @param {Buffer} buf
+     * @param {MapDataType} mapType
+     * @returns {Array<import("../../entities/map/MapLayer")>}
+     */
     static PARSE_IMAGE(parsedHeader, activeSegmentIds, segmentNames, segmentMaterials, buf, mapType) {
-        const floorPixels = [];
-        const wallPixels = [];
-        const segments = {};
-
         const layers = [];
+        const width = parsedHeader.width;
+        const height = parsedHeader.height;
+        const categories = PIXEL_CATEGORIES[mapType];
 
-        for (let i = 0; i < parsedHeader.height; i++) {
-            for (let j = 0; j < parsedHeader.width; j++) {
+        if (categories === undefined || !(width > 0 && height > 0)) {
+            return layers;
+        }
 
-                const coords = [
-                    j + ((parsedHeader.left)/parsedHeader.pixelSize),
-                    i + ((parsedHeader.top)/parsedHeader.pixelSize)
-                ];
+        if (buf.length < width * height) {
+            buf = Buffer.concat([buf, Buffer.alloc(width * height - buf.length)]);
+        }
 
-                /**
-                 * The valetudo map origin is in the top left corner
-                 * The dreame map origin is in the bottom left corner
-                 *
-                 * Therefore, we need to flip this and every Y coordinate
-                 */
-                coords[1] = (MAX_Y / parsedHeader.pixelSize) - coords[1];
+        /**
+         * The valetudo map origin is in the top left corner
+         * The dreame map origin is in the bottom left corner
+         *
+         * Therefore, we need to flip this and every Y coordinate
+         */
+        const xCoordinates = new Array(width);
+        const yCoordinates = new Array(height);
 
-                coords[0] = Math.round(coords[0]);
-                coords[1] = Math.round(coords[1]);
+        for (let j = 0; j < width; j++) {
+            xCoordinates[j] = Math.round(j + ((parsedHeader.left)/parsedHeader.pixelSize));
+        }
+        for (let i = 0; i < height; i++) {
+            yCoordinates[i] = Math.round((MAX_Y / parsedHeader.pixelSize) - (i + ((parsedHeader.top)/parsedHeader.pixelSize)));
+        }
 
+        const pixelCounts = new Int32Array(PIXEL_CATEGORY_COUNT);
 
+        for (let i = 0; i < width * height; i++) {
+            pixelCounts[categories[buf[i]]]++;
+        }
 
-                if (mapType === MAP_DATA_TYPES.REGULAR) {
-                    /**
-                     * A regular Pixel is one byte consisting of
-                     *      000000               00
-                     *      The segment ID       The Type
-                     */
-                    const px = buf[(i * parsedHeader.width) + j];
+        if (
+            pixelCounts.some((count, category) => {
+                return category !== PIXEL_CATEGORY.NONE && count > 0;
+            }) &&
+            !(Number.isInteger(xCoordinates[0]) && Number.isInteger(yCoordinates[0]))
+        ) {
+            throw new Error("Only integer coordinates are allowed"); // Same as MapLayer
+        }
 
-                    const segmentId = px >> 2;
+        const pixels = new Array(PIXEL_CATEGORY_COUNT);
+        const writePositions = new Int32Array(PIXEL_CATEGORY_COUNT);
 
-                    if (segmentId > 0 && segmentId < 62) { //62 is newly discovered floor
-                        if (!segments[segmentId]) {
-                            segments[segmentId] = [];
-                        }
+        pixelCounts.forEach((count, category) => {
+            if (category !== PIXEL_CATEGORY.NONE && count > 0) {
+                pixels[category] = new Int32Array(count * 2);
+            }
+        });
 
-                        segments[segmentId].push(coords);
-                    } else {
-                        switch (px & 0b00000011) {
-                            case PIXEL_TYPES.NONE:
-                                break;
-                            case PIXEL_TYPES.FLOOR:
-                            case PIXEL_TYPES.CARPET:
-                                floorPixels.push(coords);
-                                break;
-                            case PIXEL_TYPES.WALL:
-                                wallPixels.push(coords);
-                                break;
-                            default:
-                                Logger.warn("Unhandled pixel type", px);
-                        }
-                    }
-                } else if (mapType === MAP_DATA_TYPES.RISM) {
-                    /**
-                     * A rism Pixel is one byte consisting of
-                     *      1            1                000000
-                     *      isWall flag  isCarpet flag    The Segment ID
-                     */
-                    const px = buf[(i * parsedHeader.width) + j];
+        // Bottom to top, because the y coordinates are flipped
+        for (let i = height - 1; i >= 0; i--) {
+            const y = yCoordinates[i];
 
-                    const segmentId = px & 0b00111111;
-                    const wallFlag = px >> 7;
+            for (let j = 0; j < width; j++) {
+                const category = categories[buf[(i * width) + j]];
 
-                    /*
-                        TODO: figure out what to do with the carpet information
-                        px >> 6 & 0b00000001
-                    */
+                if (category !== PIXEL_CATEGORY.NONE) {
+                    const categoryPixels = pixels[category];
+                    const position = writePositions[category];
 
-                    if (wallFlag) {
-                        wallPixels.push(coords);
-                    } else if (segmentId > 0) {
-                        if (!segments[segmentId]) {
-                            segments[segmentId] = [];
-                        }
-
-                        segments[segmentId].push(coords);
-                    }
+                    categoryPixels[position] = xCoordinates[j];
+                    categoryPixels[position + 1] = y;
+                    writePositions[category] = position + 2;
                 }
             }
         }
 
-        if (floorPixels.length > 0) {
+        if (pixels[PIXEL_CATEGORY.FLOOR]) {
             layers.push(
                 new mapEntities.MapLayer({
-                    pixels: floorPixels.sort(mapEntities.MapLayer.COORDINATE_TUPLE_SORT).flat(),
+                    pixels: pixels[PIXEL_CATEGORY.FLOOR],
                     type: mapEntities.MapLayer.TYPE.FLOOR
                 })
             );
         }
 
-        if (wallPixels.length > 0) {
+        if (pixels[PIXEL_CATEGORY.WALL]) {
             layers.push(
                 new mapEntities.MapLayer({
-                    pixels: wallPixels.sort(mapEntities.MapLayer.COORDINATE_TUPLE_SORT).flat(),
+                    pixels: pixels[PIXEL_CATEGORY.WALL],
                     type: mapEntities.MapLayer.TYPE.WALL
                 })
             );
         }
 
-        Object.keys(segments).forEach(segmentId => {
-            const metaData = {
-                segmentId: segmentId,
-                active: activeSegmentIds.includes(segmentId),
-                source: mapType
-            };
+        for (let category = PIXEL_CATEGORY.FIRST_SEGMENT; category < PIXEL_CATEGORY_COUNT; category++) {
+            if (pixels[category]) {
+                const segmentId = String(category - PIXEL_CATEGORY.FIRST_SEGMENT + 1);
+                const metaData = {
+                    segmentId: segmentId,
+                    active: activeSegmentIds.includes(segmentId),
+                    source: mapType
+                };
 
-            if (segmentNames[segmentId]) {
-                metaData.name = segmentNames[segmentId];
+                if (segmentNames[segmentId]) {
+                    metaData.name = segmentNames[segmentId];
+                }
+
+                if (segmentMaterials[segmentId]) {
+                    metaData.material = segmentMaterials[segmentId];
+                }
+
+                layers.push(
+                    new mapEntities.MapLayer({
+                        pixels: pixels[category],
+                        type: mapEntities.MapLayer.TYPE.SEGMENT,
+                        metaData: metaData
+                    })
+                );
             }
-
-            if (segmentMaterials[segmentId]) {
-                metaData.material = segmentMaterials[segmentId];
-            }
-
-            layers.push(
-                new mapEntities.MapLayer({
-                    pixels: segments[segmentId].sort(mapEntities.MapLayer.COORDINATE_TUPLE_SORT).flat(),
-                    type: mapEntities.MapLayer.TYPE.SEGMENT,
-                    metaData: metaData
-                })
-            );
-        });
+        }
 
         return layers;
     }
@@ -843,6 +843,56 @@ const MAP_DATA_TYPES = Object.freeze({
     REGULAR: "regular",
     RISM: "rism" //Room-information Saved Map
 });
+
+/**
+ * Every possible value of a pixel byte mapped to what it represents, so that parsing an image is a single table lookup
+ * per pixel.
+ *
+ * A regular pixel is one byte consisting of
+ *      000000               00
+ *      The segment ID       The Type
+ *
+ * A rism pixel is one byte consisting of
+ *      1            1                000000
+ *      isWall flag  isCarpet flag    The Segment ID
+ *
+ * TODO: figure out what to do with the rism carpet information
+ */
+const PIXEL_CATEGORY = Object.freeze({
+    NONE: 0,
+    FLOOR: 1,
+    WALL: 2,
+    FIRST_SEGMENT: 3 // Segment 1. The ids go up to 63
+});
+const PIXEL_CATEGORY_COUNT = PIXEL_CATEGORY.FIRST_SEGMENT + 63;
+const PIXEL_CATEGORIES = {
+    [MAP_DATA_TYPES.REGULAR]: new Uint8Array(256).map((_, px) => {
+        const segmentId = px >> 2;
+
+        if (segmentId > 0 && segmentId < 62) { //62 is newly discovered floor
+            return PIXEL_CATEGORY.FIRST_SEGMENT + segmentId - 1;
+        }
+
+        switch (px & 0b00000011) {
+            case PIXEL_TYPES.FLOOR:
+            case PIXEL_TYPES.CARPET:
+                return PIXEL_CATEGORY.FLOOR;
+            case PIXEL_TYPES.WALL:
+                return PIXEL_CATEGORY.WALL;
+            default:
+                return PIXEL_CATEGORY.NONE;
+        }
+    }),
+    [MAP_DATA_TYPES.RISM]: new Uint8Array(256).map((_, px) => {
+        const segmentId = px & 0b00111111;
+
+        if (px >> 7) {
+            return PIXEL_CATEGORY.WALL;
+        }
+
+        return segmentId > 0 ? PIXEL_CATEGORY.FIRST_SEGMENT + segmentId - 1 : PIXEL_CATEGORY.NONE;
+    })
+};
 
 const HALF_INT16 = 32768;
 const HALF_INT16_UPPER_HALF = 32767;
