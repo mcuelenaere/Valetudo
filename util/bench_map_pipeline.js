@@ -972,7 +972,8 @@ if (require.main === module) {
 }
 
 module.exports = {
+    buildX40Fixtures: buildX40Fixtures,
+    formatReport: formatReport,
     main: main,
-    run: run,
-    formatReport: formatReport
+    run: run
 };
