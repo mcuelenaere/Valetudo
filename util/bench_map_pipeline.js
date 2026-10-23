@@ -54,8 +54,8 @@ const FIXTURE_DIR = path.join(__dirname, "../backend/test/lib/robots/dreame/res/
 const X40_MAP = path.join(__dirname, "res/bench_map_x40.json");
 const PATH_SIZES = [2000, 5000, 10000];
 const MAX_MIIO_PAYLOAD = 60000;
-// Measured with the biggest fixture: PARSE needs roughly this much heap per map pixel at its peak
-const PARSE_PEAK_BYTES_PER_PIXEL = 200;
+// PARSE needs roughly this much heap per map pixel at its peak (about 200 before the parser stopped allocating per pixel)
+const PARSE_PEAK_BYTES_PER_PIXEL = 60;
 const GC_KINDS = {
     [perfConstants.NODE_PERFORMANCE_GC_MINOR]: "minor",
     [perfConstants.NODE_PERFORMANCE_GC_MAJOR]: "major",
@@ -230,7 +230,9 @@ async function runCase(definition, config) {
         total: stats(totals),
         laps: laps,
         cpuMsPerIteration: (cpu.user + cpu.system) / 1000 / totals.length,
-        gc: gc
+        gc: gc,
+        // Peak resident set size of the whole process so far, which only ever grows
+        maxRssMB: Math.round(process.resourceUsage().maxRSS / 1024)
     };
 }
 
@@ -910,6 +912,7 @@ async function run(options = {}) {
             execArgv: process.execArgv,
             gcFunctionAvailable: gcFunction !== null,
             heapLimitMB: Math.round(heapLimit / 1048576),
+            maxRssMB: Math.round(process.resourceUsage().maxRSS / 1024),
             skipped: skipped,
             config: config
         },
@@ -926,7 +929,7 @@ function formatReport(report) {
     const meta = report.meta;
 
     lines.push(`node ${meta.node} (V8 ${meta.v8}, zlib ${meta.zlib}) on ${meta.platform}/${meta.arch}, ${meta.cpuCount}x ${meta.cpuModel}`);
-    lines.push(`heap limit ${meta.heapLimitMB} MB, gc() ${meta.gcFunctionAvailable ? "available" : "NOT available"}, execArgv ${JSON.stringify(meta.execArgv)}`);
+    lines.push(`heap limit ${meta.heapLimitMB} MB, peak rss ${meta.maxRssMB} MB, gc() ${meta.gcFunctionAvailable ? "available" : "NOT available"}, execArgv ${JSON.stringify(meta.execArgv)}`);
     for (const skipped of meta.skipped) {
         lines.push(`SKIPPED ${skipped}`);
     }
