@@ -607,6 +607,7 @@ function buildDownstreamCases(mapSpecs) {
                 pathPoints: spec.pathPoints,
                 mapJsonBytes: Buffer.byteLength(JSON.stringify(map)),
                 mapDeflatedBytes: today.mapData.length,
+                mapDeflatedLevel1Bytes: zlib.deflateSync(JSON.stringify(map), {level: 1}).length,
                 mapHassPngBytes: today.mapDataHass.length,
                 stateJsonBytes: Buffer.byteLength(JSON.stringify(state)),
                 layers: map.layers.length,
@@ -724,6 +725,14 @@ function buildDownstreamCases(mapSpecs) {
                         const deflated = await lap("deflate", () => {
                             return new Promise((resolve, reject) => {
                                 zlib.deflate(stringified, (err, buf) => {
+                                    return err ? reject(err) : resolve(buf);
+                                });
+                            });
+                        });
+                        // Not what MapNodeMqttHandle does, but what zlib level 1 would save and cost
+                        await lap("deflate_level1", () => {
+                            return new Promise((resolve, reject) => {
+                                zlib.deflate(stringified, {level: 1}, (err, buf) => {
                                     return err ? reject(err) : resolve(buf);
                                 });
                             });
