@@ -19,9 +19,13 @@ class DreameMapParser {
      *
      * @param {Buffer} buf
      * @param {MapDataType} [mapType]
-     * @returns {Promise<null|import("../../entities/map/ValetudoMap")>}
+     * @param {Array<{type: string, metaData: any}>} [existingLayers] Only for a saved map (rism) that is going to be merged
+     *                                                                into a map that already has these layers. Pixels are
+     *                                                                not parsed for layers that wouldn't be used and
+     *                                                                the result is no ValetudoMap but just its parts
+     * @returns {Promise<null|any|import("../../entities/map/ValetudoMap")>}
      */
-    static async PARSE(buf, mapType = MAP_DATA_TYPES.REGULAR) {
+    static async PARSE(buf, mapType = MAP_DATA_TYPES.REGULAR, existingLayers = undefined) {
         //Maps are always at least 27 bytes in size
         if (!buf || buf.length < HEADER_SIZE) {
             return null;
@@ -134,7 +138,7 @@ class DreameMapParser {
                 });
             }
 
-            layers.push(...DreameMapParser.PARSE_IMAGE(parsedHeader, activeSegmentIds, segmentNames, segmentMaterials, imageData, mapType));
+            layers.push(...DreameMapParser.PARSE_IMAGE(parsedHeader, activeSegmentIds, segmentNames, segmentMaterials, imageData, mapType, existingLayers));
 
             /**
              * Contains saved map data such as virtual restrictions as well as segments
@@ -148,9 +152,13 @@ class DreameMapParser {
              * newly mapped segments without any instantly aborted second cleanups.
              */
             if (additionalData.rism && (additionalData.ris === 2 || additionalData.iscleanlog === true)) {
-                const rismResult = await DreameMapParser.PARSE(await DreameMapParser.PREPROCESS(additionalData.rism), MAP_DATA_TYPES.RISM);
+                const rismResult = await DreameMapParser.PARSE(
+                    await DreameMapParser.PREPROCESS(additionalData.rism),
+                    MAP_DATA_TYPES.RISM,
+                    layers
+                );
 
-                if (rismResult instanceof mapEntities.ValetudoMap) {
+                if (rismResult) {
                     rismResult.entities.forEach(e => {
                         if (e instanceof mapEntities.PointMapEntity) {
                             if (e.type === mapEntities.PointMapEntity.TYPE.ROBOT_POSITION && parsedHeader.robot_position.valid === false) {
@@ -450,6 +458,14 @@ class DreameMapParser {
             return null;
         }
 
+        if (existingLayers) {
+            return {
+                metaData: metaData,
+                layers: layers,
+                entities: entities
+            };
+        }
+
         return new mapEntities.ValetudoMap({
             metaData: metaData,
             size: {
@@ -511,9 +527,11 @@ class DreameMapParser {
      * @param {any} segmentMaterials
      * @param {Buffer} buf
      * @param {MapDataType} mapType
-     * @returns {Array<import("../../entities/map/MapLayer")>}
+     * @param {Array<{type: string, metaData: any}>} [existingLayers] If provided, layers that already exist there are not built
+     *                                                                but only returned as {type, metaData}
+     * @returns {Array<any>}
      */
-    static PARSE_IMAGE(parsedHeader, activeSegmentIds, segmentNames, segmentMaterials, buf, mapType) {
+    static PARSE_IMAGE(parsedHeader, activeSegmentIds, segmentNames, segmentMaterials, buf, mapType, existingLayers = undefined) {
         const layers = [];
         const width = parsedHeader.width;
         const height = parsedHeader.height;
@@ -558,24 +576,32 @@ class DreameMapParser {
             throw new Error("Only integer coordinates are allowed"); // Same as MapLayer
         }
 
+        // The pixels of a layer of a saved map (rism) are of no use if the map it is merged into has that layer, too
+        const isNeeded = (type, segmentId) => {
+            return existingLayers === undefined || !existingLayers.some(l => {
+                return segmentId === undefined ? l.type === type : l.metaData.segmentId === segmentId;
+            });
+        };
         const pixels = new Array(PIXEL_CATEGORY_COUNT);
         const writePositions = new Int32Array(PIXEL_CATEGORY_COUNT);
+        let anyNeeded = false;
 
         pixelCounts.forEach((count, category) => {
-            if (category !== PIXEL_CATEGORY.NONE && count > 0) {
+            if (category !== PIXEL_CATEGORY.NONE && count > 0 && isNeeded(...DreameMapParser.GET_PIXEL_CATEGORY_LAYER(category))) {
                 pixels[category] = new Int32Array(count * 2);
+                anyNeeded = true;
             }
         });
 
         // Bottom to top, because the y coordinates are flipped
-        for (let i = height - 1; i >= 0; i--) {
+        for (let i = height - 1; anyNeeded && i >= 0; i--) {
             const y = yCoordinates[i];
 
             for (let j = 0; j < width; j++) {
                 const category = categories[buf[(i * width) + j]];
+                const categoryPixels = pixels[category];
 
-                if (category !== PIXEL_CATEGORY.NONE) {
-                    const categoryPixels = pixels[category];
+                if (categoryPixels !== undefined) {
                     const position = writePositions[category];
 
                     categoryPixels[position] = xCoordinates[j];
@@ -585,32 +611,18 @@ class DreameMapParser {
             }
         }
 
-        if (pixels[PIXEL_CATEGORY.FLOOR]) {
-            layers.push(
-                new mapEntities.MapLayer({
-                    pixels: pixels[PIXEL_CATEGORY.FLOOR],
-                    type: mapEntities.MapLayer.TYPE.FLOOR
-                })
-            );
-        }
+        pixelCounts.forEach((count, category) => {
+            if (category === PIXEL_CATEGORY.NONE || count === 0) {
+                return;
+            }
 
-        if (pixels[PIXEL_CATEGORY.WALL]) {
-            layers.push(
-                new mapEntities.MapLayer({
-                    pixels: pixels[PIXEL_CATEGORY.WALL],
-                    type: mapEntities.MapLayer.TYPE.WALL
-                })
-            );
-        }
+            const [type, segmentId] = DreameMapParser.GET_PIXEL_CATEGORY_LAYER(category);
+            const metaData = {};
 
-        for (let category = PIXEL_CATEGORY.FIRST_SEGMENT; category < PIXEL_CATEGORY_COUNT; category++) {
-            if (pixels[category]) {
-                const segmentId = String(category - PIXEL_CATEGORY.FIRST_SEGMENT + 1);
-                const metaData = {
-                    segmentId: segmentId,
-                    active: activeSegmentIds.includes(segmentId),
-                    source: mapType
-                };
+            if (type === mapEntities.MapLayer.TYPE.SEGMENT) {
+                metaData.segmentId = segmentId;
+                metaData.active = activeSegmentIds.includes(segmentId);
+                metaData.source = mapType;
 
                 if (segmentNames[segmentId]) {
                     metaData.name = segmentNames[segmentId];
@@ -619,18 +631,30 @@ class DreameMapParser {
                 if (segmentMaterials[segmentId]) {
                     metaData.material = segmentMaterials[segmentId];
                 }
-
-                layers.push(
-                    new mapEntities.MapLayer({
-                        pixels: pixels[category],
-                        type: mapEntities.MapLayer.TYPE.SEGMENT,
-                        metaData: metaData
-                    })
-                );
             }
-        }
+
+            layers.push(pixels[category] ?
+                new mapEntities.MapLayer({pixels: pixels[category], type: type, metaData: metaData}) :
+                {type: type, metaData: metaData}
+            );
+        });
 
         return layers;
+    }
+
+    /**
+     * @param {number} category
+     * @returns {[string, string|undefined]} type and segment id of the layer
+     */
+    static GET_PIXEL_CATEGORY_LAYER(category) {
+        switch (category) {
+            case PIXEL_CATEGORY.FLOOR:
+                return [mapEntities.MapLayer.TYPE.FLOOR, undefined];
+            case PIXEL_CATEGORY.WALL:
+                return [mapEntities.MapLayer.TYPE.WALL, undefined];
+            default:
+                return [mapEntities.MapLayer.TYPE.SEGMENT, String(category - PIXEL_CATEGORY.FIRST_SEGMENT + 1)];
+        }
     }
 
     /**

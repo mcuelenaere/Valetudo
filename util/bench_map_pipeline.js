@@ -20,6 +20,7 @@
     Cases:
         parse/<fixture>      miio decode -> PREPROCESS (base64 + inflate) -> PARSE
         parse_path/<n>       DreameMapParser.PARSE_PATH for a trace string with n points
+        push_pframe/2k       what a P-frame pushed by the robot costs: PREPROCESS + PARSE returning null
         listeners/<map>      everything that is hooked onto MapUpdated:
                                  webserver SSE (state + map, only if clients are connected: none here),
                                  MQTT map-data + map-data-hass + the dedup hashing in MqttController.publish()
@@ -307,6 +308,7 @@ const DREAME_MATERIALS = {generic: 0, wood_horizontal: 1, wood_vertical: 1, tile
 const FRAME_MARGIN = 5;
 const HEADER_SIZE = 27;
 const FRAME_TYPE_I = 73;
+const PFRAME_TYPE = 80;
 const SAVED_MAP_WALL_FLAG = 0x80;
 
 /**
@@ -802,6 +804,35 @@ function buildParseCases(fixtures) {
             }
         });
     }
+
+    // The robot also pushes frames it has changed, most of which are P-frames that are inflated only to be ignored
+    cases.push({
+        name: "push_pframe/2k",
+        setup: async () => {
+            const random = mulberry32(7);
+            const frame = Buffer.alloc(2048);
+
+            frame.writeInt8(PFRAME_TYPE, 4);
+            for (let i = HEADER_SIZE; i < frame.length; i++) {
+                frame[i] = random() < 0.5 ? 0 : Math.floor(random() * 256);
+            }
+
+            const value = toBase64Url(frame);
+
+            return {
+                params: {base64Bytes: value.length, inflatedBytes: frame.length},
+                iteration: async (lap) => {
+                    const inflated = await lap("preprocess", () => {
+                        return DreameMapParser.PREPROCESS(value);
+                    });
+
+                    await lap("parse", () => {
+                        return DreameMapParser.PARSE(inflated);
+                    });
+                }
+            };
+        }
+    });
 
     for (const n of PATH_SIZES) {
         cases.push({
