@@ -3,7 +3,7 @@
 
     Usage:
         node util/bench_map_pipeline.js [--json] [--quick] [--filter <text>] [--iterations <n>] [--budget-ms <ms>]
-                                        [--warmup <n>] [--fixtures <dir>] [--report <result.json>]
+                                        [--warmup <n>] [--fixtures <dir>] [--x40-map <map.json>] [--report <result.json>]
 
         --json        Print only machine-readable JSON to stdout (progress goes to stderr)
         --quick       Smoke test: a handful of iterations per case
@@ -12,6 +12,9 @@
         --budget-ms   Stop a case after this much wall time once the minimum iterations are done (default 5000)
         --warmup      Untimed iterations per case (default 5)
         --fixtures    Additional directory of Dreame map frames (*.bin; base64url+zlib or already inflated)
+        --x40-map     The map of a real robot as served by /api/v2/robot/state/map, for the x40_* cases. These are skipped
+                      without it. Defaults to $VALETUDO_BENCH_X40_MAP or util/res/bench_map_x40.json, which is not part of
+                      the repository, because it is somebody's floor plan
         --report      Don't run anything, print the human-readable report for a result file written by --json
 
     For a copy that needs nothing but a node binary, run util/build_bench_bundle.js (writes ./bench) and then
@@ -52,7 +55,7 @@ const MapNodeMqttHandle = require("../backend/lib/mqtt/handles/MapNodeMqttHandle
 const {SSEHub} = require("../backend/lib/webserver/middlewares/sse");
 
 const FIXTURE_DIR = path.join(__dirname, "../backend/test/lib/robots/dreame/res/map");
-const X40_MAP = path.join(__dirname, "res/bench_map_x40.json");
+const DEFAULT_X40_MAP = path.join(__dirname, "res/bench_map_x40.json");
 const PATH_SIZES = [2000, 5000, 10000];
 const MAX_MIIO_PAYLOAD = 60000;
 // PARSE needs roughly this much heap per map pixel at its peak (about 200 before the parser stopped allocating per pixel)
@@ -237,6 +240,14 @@ async function runCase(definition, config) {
     };
 }
 
+/**
+ * @param {string} [file]
+ * @returns {string}
+ */
+function getX40MapFile(file) {
+    return file ?? process.env.VALETUDO_BENCH_X40_MAP ?? DEFAULT_X40_MAP;
+}
+
 function toBase64Url(data) {
     return zlib.deflateSync(data).toString("base64").replace(/\+/g, "-").replace(/\//g, "_");
 }
@@ -400,16 +411,21 @@ function buildDreameFrame(map, trace, withSavedMap) {
 }
 
 /**
- * Frames for the real X40 map. The path of a cleaning robot is part of every frame it sends
+ * Frames for the map of a real robot (the X40 map). The path of a cleaning robot is part of every frame it sends
  *
- * @returns {Promise<Array<object>>}
+ * @param {string} [mapFile]
+ * @returns {Promise<Array<object>>} Nothing without the map
  */
-async function buildX40Fixtures() {
+async function buildX40Fixtures(mapFile) {
     const fixtures = [];
     const trace = generateTraceString(5000);
 
+    if (!fs.existsSync(getX40MapFile(mapFile))) {
+        return fixtures;
+    }
+
     for (const withSavedMap of [false, true]) {
-        const map = entities.map.ValetudoMap.DESERIALIZE(JSON.parse(fs.readFileSync(X40_MAP, "utf8")));
+        const map = entities.map.ValetudoMap.DESERIALIZE(JSON.parse(fs.readFileSync(getX40MapFile(mapFile), "utf8")));
         const inflated = buildDreameFrame(map, trace, withSavedMap);
         const fixture = await describeFixture(
             withSavedMap ? "x40_frame_with_saved_map" : "x40_frame",
@@ -493,10 +509,15 @@ function generateTraceString(pointCount) {
 }
 
 /**
- * @returns {Array<{name: string, pathPoints: number, create: () => Promise<any>}>}
+ * @param {string} [mapFile]
+ * @returns {Array<{name: string, pathPoints: number, create: () => Promise<any>}>} Nothing without the map
  */
-function getX40MapSpecs() {
-    const raw = fs.readFileSync(X40_MAP, "utf8");
+function getX40MapSpecs(mapFile) {
+    if (!fs.existsSync(getX40MapFile(mapFile))) {
+        return [];
+    }
+
+    const raw = fs.readFileSync(getX40MapFile(mapFile), "utf8");
     const variants = [{name: "x40_docked", pathPoints: 0}, ...PATH_SIZES.map(n => {
         return {name: `x40_path${n / 1000}k`, pathPoints: n};
     })];
@@ -873,6 +894,7 @@ function buildParseCases(fixtures) {
  * @param {number} [options.budgetMs]
  * @param {number} [options.warmup]
  * @param {Array<string>} [options.fixtureDirs]
+ * @param {string} [options.x40Map]
  * @param {(line: string) => void} [options.progress]
  * @returns {Promise<object>}
  */
@@ -893,10 +915,15 @@ async function run(options = {}) {
 
     const heapLimit = v8.getHeapStatistics().heap_size_limit;
     const skipped = [];
+
+    if (!fs.existsSync(getX40MapFile(options.x40Map))) {
+        skipped.push(`x40_* cases: there is no map at ${getX40MapFile(options.x40Map)}. Use --x40-map <file> or VALETUDO_BENCH_X40_MAP to point to the map of a robot`);
+    }
+
     // Running out of heap is fatal, so with a small heap limit (e.g. 64 MB like the robot) maps that cannot be parsed are skipped
     const fixtures = [
         ...(await loadFixtures([FIXTURE_DIR, ...(options.fixtureDirs ?? [])])),
-        ...(await buildX40Fixtures())
+        ...(await buildX40Fixtures(options.x40Map))
     ].filter(f => {
         if (f.pixels * PARSE_PEAK_BYTES_PER_PIXEL > heapLimit) {
             skipped.push(`${f.name}: ${f.pixels} pixels need ~${Math.round(f.pixels * PARSE_PEAK_BYTES_PER_PIXEL / 1048576)} MB to parse, heap limit is ${Math.round(heapLimit / 1048576)} MB`);
@@ -907,7 +934,7 @@ async function run(options = {}) {
         return true;
     });
     const mapSpecs = [
-        ...getX40MapSpecs(),
+        ...getX40MapSpecs(options.x40Map),
         // The two biggest maps of the Dreame fixtures
         ...fixtures.filter(f => {
             return ["d9_1093_huge", "l10su_3031_giant"].includes(f.name);
@@ -1020,6 +1047,9 @@ function parseArguments(argv) {
             case "--fixtures":
                 options.fixtureDirs.push(path.resolve(argv[++i]));
                 break;
+            case "--x40-map":
+                options.x40Map = path.resolve(argv[++i]);
+                break;
             case "--report":
                 options.report = argv[++i];
                 break;
@@ -1061,6 +1091,7 @@ if (require.main === module) {
 module.exports = {
     buildX40Fixtures: buildX40Fixtures,
     formatReport: formatReport,
+    getX40MapFile: getX40MapFile,
     main: main,
     run: run
 };

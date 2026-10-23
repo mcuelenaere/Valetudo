@@ -6,6 +6,10 @@
 
     Regenerate (only if the output of the parser is supposed to change!):
         node test/helpers/dreame_map_goldens.js --write
+
+    If there is the map of a real robot (see util/bench_map_pipeline.js, --x40-map), frames that are built from it
+    are covered, too. The hashes of these are not part of the repository, as they are derived from somebody's floor plan.
+    Instead, --write puts them into map_parse_goldens_x40.json, which is ignored by git.
  */
 
 const crypto = require("crypto");
@@ -17,6 +21,8 @@ const DreameMapParser = require("../../lib/robots/dreame/DreameMapParser");
 
 const FIXTURE_DIR = path.join(__dirname, "../lib/robots/dreame/res/map");
 const GOLDEN_FILE = path.join(__dirname, "../lib/robots/dreame/res/map_parse_goldens.json");
+const X40_GOLDEN_FILE = path.join(__dirname, "../lib/robots/dreame/res/map_parse_goldens_x40.json");
+const X40_MAP_FILE = process.env.VALETUDO_BENCH_X40_MAP ?? path.join(__dirname, "../../../util/res/bench_map_x40.json");
 const HEADER_SIZE = 27;
 const FUZZ_SEEDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
@@ -159,10 +165,27 @@ function buildFuzzFrame(seed) {
 }
 
 /**
+ * @param {Array<{name: string, frame: () => Promise<Buffer>}>} inputs
+ * @returns {Promise<Object<string, string>>}
+ */
+async function hashParsedFrames(inputs) {
+    const goldens = {};
+
+    for (const input of inputs) {
+        try {
+            goldens[input.name] = hashMap(await DreameMapParser.PARSE(await input.frame()));
+        } catch (e) {
+            goldens[input.name] = `error: ${e.message}`;
+        }
+    }
+
+    return goldens;
+}
+
+/**
  * @returns {Promise<Object<string, string>>}
  */
 async function computeGoldens() {
-    const goldens = {};
     const inputs = [];
 
     for (const file of fs.readdirSync(FIXTURE_DIR).filter(f => {
@@ -176,40 +199,49 @@ async function computeGoldens() {
         }});
     }
 
-    // The X40 frames are synthetic, but have the size and shape of the real thing
-    // eslint-disable-next-line node/no-unpublished-require
-    for (const fixture of await require("../../../util/bench_map_pipeline").buildX40Fixtures()) {
-        inputs.push({name: fixture.name, frame: async () => {
-            return fixture.inflated;
-        }});
-    }
-
     for (const seed of FUZZ_SEEDS) {
         inputs.push({name: `fuzz_${seed}`, frame: async () => {
             return buildFuzzFrame(seed);
         }});
     }
 
-    for (const input of inputs) {
-        try {
-            goldens[input.name] = hashMap(await DreameMapParser.PARSE(await input.frame()));
-        } catch (e) {
-            goldens[input.name] = `error: ${e.message}`;
-        }
-    }
+    return hashParsedFrames(inputs);
+}
 
-    return goldens;
+/**
+ * Frames of the size and shape of the map of a real robot, if that is available
+ *
+ * @returns {Promise<Object<string, string>>}
+ */
+async function computeX40Goldens() {
+    // eslint-disable-next-line node/no-unpublished-require
+    const fixtures = await require("../../../util/bench_map_pipeline").buildX40Fixtures(X40_MAP_FILE);
+
+    return hashParsedFrames(fixtures.map(fixture => {
+        return {name: fixture.name, frame: async () => {
+            return fixture.inflated;
+        }};
+    }));
 }
 
 if (require.main === module && process.argv[2] === "--write") {
     computeGoldens().then(goldens => {
         fs.writeFileSync(GOLDEN_FILE, JSON.stringify(goldens, null, 2) + "\n");
+
+        return computeX40Goldens();
+    }).then(goldens => {
+        if (Object.keys(goldens).length > 0) {
+            fs.writeFileSync(X40_GOLDEN_FILE, JSON.stringify(goldens, null, 2) + "\n");
+        }
     });
 }
 
 module.exports = {
     FUZZ_SEEDS: FUZZ_SEEDS,
     GOLDEN_FILE: GOLDEN_FILE,
+    X40_GOLDEN_FILE: X40_GOLDEN_FILE,
+    X40_MAP_FILE: X40_MAP_FILE,
     buildFuzzFrame: buildFuzzFrame,
-    computeGoldens: computeGoldens
+    computeGoldens: computeGoldens,
+    computeX40Goldens: computeX40Goldens
 };

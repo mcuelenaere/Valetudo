@@ -18,3 +18,8 @@ build/
 /backend/lib/robots/midea/generated/midea_protobufs.js
 
 /docs/dist
+
+# the benchmark bundle contains the map of a real robot if there is one
+/bench/
+/util/res/bench_map_x40.json
+/backend/test/lib/robots/dreame/res/map_parse_goldens_x40.json
