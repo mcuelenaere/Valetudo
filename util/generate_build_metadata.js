@@ -1,3 +1,4 @@
+const childProcess = require("child_process");
 const fs = require('fs');
 const path = require("path");
 
@@ -21,6 +22,19 @@ function GET_VALETUDO_VERSION() {
 
 function GET_COMMIT_ID() {
     let commitId = "unknown";
+
+    try {
+        const rootDirectory = path.resolve(__dirname, "..");
+
+        // Works for worktrees and branches other than master, where reading .git/HEAD doesn't
+        return childProcess.execFileSync("git", ["rev-parse", "HEAD"], {
+            cwd: rootDirectory,
+            encoding: "utf-8",
+            stdio: ["ignore", "pipe", "ignore"]
+        }).trim();
+    } catch (e) {
+        //intentional
+    }
 
     try {
         const rootDirectory = path.resolve(__dirname, "..");
