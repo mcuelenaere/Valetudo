@@ -39,7 +39,7 @@
     "@mui/material": "6.5.0",
     "@tanstack/react-query": "5.90.19",
     "@tanstack/react-query-devtools": "5.91.2",
-    "axios": "1.13.2",
+    "axios": "0.34.0",
     "eliza-as-promised": "git+https://npm@github.com/Hypfer/eliza-as-promised#0.0.3",
     "jsmpeg": "git+https://npm@github.com/Hypfer/jsmpeg.git#2026.08.0",
     "notistack": "3.0.2",
@@ -48,7 +48,7 @@
     "react-dom": "19.2.3",
     "react-joystick-component": "6.2.1",
     "react-markdown": "10.1.0",
-    "react-router-dom": "7.12.0",
+    "react-router-dom": "7.18.4",
     "reconnecting-eventsource": "1.6.4",
     "rehype-raw": "7.0.0",
     "remark-gfm": "4.0.1",
@@ -57,7 +57,7 @@
     "zustand": "5.0.10"
   },
   "devDependencies": {
-    "@babel/core": "7.28.6",
+    "@babel/core": "8.0.9",
     "@babel/plugin-proposal-private-property-in-object": "7.21.11",
     "@svgr/webpack": "8.1.0",
     "@types/react": "19.2.8",
