@@ -26,6 +26,8 @@ class MapNodeMqttHandle extends NodeMqttHandle {
         }));
 
         this.robot = options.robot;
+        /** @type {{map: import("../../entities/map/ValetudoMap"), promise: Promise<Buffer>}|null} */
+        this.deflatedMapData = null;
 
         this.registerChild(
             new PropertyMqttHandle({
@@ -147,11 +149,47 @@ class MapNodeMqttHandle extends NodeMqttHandle {
      * @public
      */
     onMapUpdated() {
+        this.deflatedMapData = null;
+
         if (this.controller.isInitialized) {
             this.refresh().catch(err => {
                 Logger.error("Error during MQTT handle refresh", err);
             });
         }
+    }
+
+    /**
+     * Both map-data and map-data-hass contain the same deflated JSON, so that is only created once per map update
+     *
+     * @private
+     * @param {import("../../entities/map/ValetudoMap")} map
+     * @return {Promise<Buffer>}
+     */
+    getDeflatedMapData(map) {
+        if (this.deflatedMapData?.map !== map) {
+            const promise = new Promise((resolve, reject) => {
+                zlib.deflate(JSON.stringify(map), (err, buf) => {
+                    if (err !== null) {
+                        return reject(err);
+                    }
+
+                    resolve(buf);
+                });
+            });
+
+            this.deflatedMapData = {
+                map: map,
+                promise: promise
+            };
+
+            promise.catch(() => {
+                if (this.deflatedMapData?.promise === promise) {
+                    this.deflatedMapData = null; // Don't keep failures around
+                }
+            });
+        }
+
+        return this.deflatedMapData.promise;
     }
 
     /**
@@ -163,57 +201,46 @@ class MapNodeMqttHandle extends NodeMqttHandle {
         if (this.robot.state.map === null || !this.controller.isInitialized) {
             return null;
         }
-        const robot = this.robot;
 
-        const promise = new Promise((resolve, reject) => {
-            zlib.deflate(JSON.stringify(robot.state.map), (err, buf) => {
-                if (err !== null) {
-                    return reject(err);
-                }
-
-                let payload;
-
-                if (wrapInPng) {
-                    const length = Buffer.alloc(4);
-                    const checksum = Buffer.alloc(4);
-
-                    const textChunkData = Buffer.concat([
-                        PNG_WRAPPER.TEXT_CHUNK_TYPE,
-                        PNG_WRAPPER.TEXT_CHUNK_METADATA,
-                        buf
-                    ]);
-
-                    length.writeInt32BE(PNG_WRAPPER.TEXT_CHUNK_METADATA.length + buf.length, 0);
-                    checksum.writeUInt32BE(crc.crc32(textChunkData), 0);
-
-
-                    payload = Buffer.concat([
-                        PNG_WRAPPER.IMAGE_WITHOUT_END_CHUNK,
-                        length,
-                        textChunkData,
-                        checksum,
-                        PNG_WRAPPER.END_CHUNK
-                    ]);
-                } else {
-                    payload = buf;
-                }
-
-                resolve(payload);
-            });
-        });
+        let buf;
 
         try {
-            // intentional return await
-            return await promise;
+            buf = await this.getDeflatedMapData(this.robot.state.map);
         } catch (err) {
             Logger.error("Error while deflating map data for mqtt publish", err);
-        }
-        return null;
-    }
 
+            return null;
+        }
+
+        if (!wrapInPng) {
+            return buf;
+        }
+
+        const length = Buffer.alloc(4);
+        const checksum = Buffer.alloc(4);
+
+        const textChunkData = Buffer.concat([
+            PNG_WRAPPER.TEXT_CHUNK_TYPE,
+            PNG_WRAPPER.TEXT_CHUNK_METADATA,
+            buf
+        ]);
+
+        length.writeInt32BE(PNG_WRAPPER.TEXT_CHUNK_METADATA.length + buf.length, 0);
+        checksum.writeUInt32BE(crc32(textChunkData), 0);
+
+        return Buffer.concat([
+            PNG_WRAPPER.IMAGE_WITHOUT_END_CHUNK,
+            length,
+            textChunkData,
+            checksum,
+            PNG_WRAPPER.END_CHUNK
+        ]);
+    }
 
 }
 
+// Node added a native implementation in 22.2 and 20.15
+const crc32 = typeof zlib.crc32 === "function" ? zlib.crc32 : crc.crc32;
 
 const PNG_WRAPPER = {
     TEXT_CHUNK_TYPE: Buffer.from("zTXt"),

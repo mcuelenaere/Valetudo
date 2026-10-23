@@ -573,9 +573,14 @@ function buildDownstreamCases(mapSpecs) {
     const prepare = async (spec) => {
         const map = await spec.create();
         const state = buildState(map);
-        const mapHandle = {robot: {state: state}, controller: {isInitialized: true}};
+        // Everything MapNodeMqttHandle#getMapData needs, without the rest of the mqtt machinery
+        const mapHandle = Object.assign(Object.create(MapNodeMqttHandle.prototype), {
+            robot: {state: state},
+            controller: {isInitialized: true},
+            deflatedMapData: null
+        });
         const getMapData = (wrapInPng) => {
-            return MapNodeMqttHandle.prototype["getMapData"].call(mapHandle, wrapInPng);
+            return mapHandle["getMapData"](wrapInPng);
         };
 
         const today = {mapData: await getMapData(false), mapDataHass: await getMapData(true)};
@@ -591,6 +596,7 @@ function buildDownstreamCases(mapSpecs) {
         return {
             map: map,
             state: state,
+            mapHandle: mapHandle,
             getMapData: getMapData,
             params: {
                 pathPoints: spec.pathPoints,
@@ -608,7 +614,7 @@ function buildDownstreamCases(mapSpecs) {
         cases.push({
             name: `listeners/${spec.name}`,
             setup: async () => {
-                const {state, getMapData, params} = await prepare(spec);
+                const {state, mapHandle, getMapData, params} = await prepare(spec);
                 const stateHub = new SSEHub({name: "State"});
                 const mapHub = new SSEHub({name: "Map"});
                 const cache = new KeyValueDeduplicationCache({});
@@ -616,6 +622,9 @@ function buildDownstreamCases(mapSpecs) {
                 return {
                     params: params,
                     iteration: async (lap) => {
+                        // MapNodeMqttHandle#onMapUpdated() drops what it cached of the previous map
+                        mapHandle.deflatedMapData = null;
+
                         // RobotRouter: onStateUpdated + onMapUpdated. The arguments are evaluated even if nobody listens
                         await lap("sse_state", () => {
                             stateHub.event("StateUpdated", JSON.stringify(state));
