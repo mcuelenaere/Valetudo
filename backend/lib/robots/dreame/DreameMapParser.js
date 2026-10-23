@@ -633,66 +633,70 @@ class DreameMapParser {
         return layers;
     }
 
+    /**
+     * Parses the trace of the robot, which is "S<x>,<y>" followed by any number of "L<dx>,<dy>"
+     * (and from time to time another start, because the robot moves without cleaning or switches to mopping).
+     *
+     * A trace can easily have thousands of points, so this is a hand-written scanner instead of a regex that
+     * allocates a match object and several strings per point. Just like the regex it replaced, it skips everything
+     * that isn't an operator followed by two comma separated integers.
+     *
+     * @param {any} parsedHeader
+     * @param {string} traceString
+     * @param {boolean} appendRobotPosition
+     * @returns {Array<import("../../entities/map/entities/PathMapEntity")>}
+     */
     static PARSE_PATH(parsedHeader, traceString, appendRobotPosition) {
+        const trace = String(traceString);
         const paths = [];
+        let currentPoints = undefined;
+        let x = 0;
+        let y = 0;
+        let position = 0;
 
-        const unprocessedPaths = [];
-        let currentUnprocessedPath = undefined;
+        while (position < trace.length) {
+            const operator = trace.charCodeAt(position);
 
-        let currentPosition = {
-            x: 0,
-            y: 0
-        };
-        let match;
+            if (PATH_OPERATOR_CODES.has(operator) && scanInteger(trace, position + 1)) {
+                const xValue = scanned.value;
+                const afterX = scanned.end;
 
-        while ((match = PATH_REGEX.exec(traceString)) !== null) {
-            if (
-                match.groups.operator === PATH_OPERATORS.START ||
-                match.groups.operator === PATH_OPERATORS.MOP_START ||
-                match.groups.operator === PATH_OPERATORS.DUAL_START
-            ) {
-                currentUnprocessedPath = [];
-                unprocessedPaths.push(currentUnprocessedPath);
+                if (trace.charCodeAt(afterX) === CHAR_CODE.COMMA && scanInteger(trace, afterX + 1)) {
+                    if (operator === PATH_OPERATORS.RELATIVE_LINE) {
+                        x += xValue;
+                        y += scanned.value;
+                    } else {
+                        currentPoints = [];
+                        paths.push(currentPoints);
 
-                currentPosition.x = parseInt(match.groups.x);
-                currentPosition.y = parseInt(match.groups.y);
-            } else if (match.groups.operator === PATH_OPERATORS.RELATIVE_LINE) {
-                currentPosition.x += parseInt(match.groups.x);
-                currentPosition.y += parseInt(match.groups.y);
-            } else {
-                throw new Error(`Invalid path operator ${match.groups.operator}`);
+                        x = xValue;
+                        y = scanned.value;
+                    }
+
+                    currentPoints.push(
+                        Math.round((x + HALF_INT16)/10),
+                        MAX_Y - Math.round((y + HALF_INT16)/10)
+                    );
+                    position = scanned.end;
+
+                    continue;
+                }
             }
 
-            currentUnprocessedPath.push({
-                x: currentPosition.x,
-                y: currentPosition.y
-            });
+            position++;
         }
 
-        unprocessedPaths.forEach((unprocessedPoints, i) => {
-            let processedPathPoints = [];
+        //Add the robot position to the last of all paths
+        if (appendRobotPosition && paths.length > 0) {
+            paths[paths.length - 1].push(parsedHeader.robot_position.x, parsedHeader.robot_position.y);
+        }
 
-            unprocessedPoints.forEach(e => {
-                const p = DreameMapParser.CONVERT_TO_VALETUDO_COORDINATES(e.x, e.y);
-
-                processedPathPoints.push(p.x, p.y);
+        return paths.map(points => {
+            return new mapEntities.PathMapEntity({
+                points: points,
+                type: mapEntities.PathMapEntity.TYPE.PATH
             });
-
-            //Add the robot position to the last of all paths
-            if (i === unprocessedPaths.length-1 && appendRobotPosition) {
-                processedPathPoints.push(parsedHeader.robot_position.x, parsedHeader.robot_position.y);
-            }
-
-            paths.push(
-                new mapEntities.PathMapEntity({
-                    points: processedPathPoints,
-                    type: mapEntities.PathMapEntity.TYPE.PATH
-                })
-            );
         });
-
-
-        return paths;
     }
 
     static PARSE_AREAS(parsedHeader, areas, type) {
@@ -826,13 +830,70 @@ const FRAME_TYPES = Object.freeze({
     P: 80
 });
 
-const PATH_REGEX = /(?<operator>[SMWL])(?<x>-?\d+),(?<y>-?\d+)/g;
-const PATH_OPERATORS = {
-    START: "S",
-    MOP_START: "M",
-    DUAL_START: "W",
-    RELATIVE_LINE: "L"
-};
+const PATH_OPERATORS = Object.freeze({
+    START: "S".charCodeAt(0),
+    MOP_START: "M".charCodeAt(0),
+    DUAL_START: "W".charCodeAt(0),
+    RELATIVE_LINE: "L".charCodeAt(0)
+});
+const PATH_OPERATOR_CODES = new Set(Object.values(PATH_OPERATORS));
+const CHAR_CODE = Object.freeze({
+    COMMA: ",".charCodeAt(0),
+    MINUS: "-".charCodeAt(0),
+    ZERO: "0".charCodeAt(0)
+});
+// Up to this many decimal digits can be summed up exactly
+const MAX_EXACT_DIGITS = 15;
+
+/**
+ * The result of scanInteger. Being a shared object, it saves allocating one for each of the numbers of a trace.
+ * This is fine, as scanning is synchronous
+ */
+const scanned = {value: 0, end: 0};
+
+/**
+ * Scans an integer like /-?\d+/y would match, but without allocating anything
+ *
+ * @param {string} text
+ * @param {number} start
+ * @returns {boolean} true if there is an integer at start. If so, it and the index after it are in `scanned`
+ */
+function scanInteger(text, start) {
+    let index = start;
+    let negative = false;
+    let value = 0;
+
+    if (text.charCodeAt(index) === CHAR_CODE.MINUS) {
+        negative = true;
+        index++;
+    }
+
+    const digitsStart = index;
+
+    while (index < text.length) {
+        const digit = text.charCodeAt(index) - CHAR_CODE.ZERO;
+
+        if (digit < 0 || digit > 9) {
+            break;
+        }
+
+        value = value * 10 + digit;
+        index++;
+    }
+
+    if (index === digitsStart) {
+        return false;
+    }
+
+    if (index - digitsStart > MAX_EXACT_DIGITS) {
+        value = Number(text.slice(digitsStart, index));
+    }
+
+    scanned.value = negative ? -value : value;
+    scanned.end = index;
+
+    return true;
+}
 
 /**
  *  @typedef {string} MapDataType
