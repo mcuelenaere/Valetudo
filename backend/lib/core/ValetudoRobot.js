@@ -210,13 +210,20 @@ class ValetudoRobot {
 
 
         if (isActive) {
-            repollSeconds = ValetudoRobot.MAP_POLLING_INTERVALS.ACTIVE;
+            const configuredSeconds = this.config.get("robot")?.activeMapPollIntervalSeconds;
 
-            if (this.flags.lowmemHost) {
-                repollSeconds *= 2;
-            }
-            if (this.flags.hugeMap) {
-                repollSeconds *= 2;
+            if (Number.isFinite(configuredSeconds) && configuredSeconds > 0) {
+                // Taken as it is, without the adjustments below
+                repollSeconds = configuredSeconds;
+            } else {
+                repollSeconds = ValetudoRobot.MAP_POLLING_INTERVALS.ACTIVE;
+
+                if (this.flags.lowmemHost) {
+                    repollSeconds *= 2;
+                }
+                if (this.flags.hugeMap) {
+                    repollSeconds *= 2;
+                }
             }
         }
 

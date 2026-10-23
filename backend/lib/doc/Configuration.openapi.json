@@ -22,6 +22,12 @@
               },
               "implementationSpecificConfig": {
                 "type": "object"
+              },
+              "activeMapPollIntervalSeconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 600,
+                "description": "How long to wait between two map polls while the robot is active (cleaning, returning etc.) and shortly after.\nPolling the map is one of the most expensive things Valetudo does, so a longer interval reduces its cpu usage while cleaning at the cost of a less up-to-date map.\nIf not set, the interval is 2 seconds, doubled for very large maps and for robots with very little memory.\nIf set, it is used as it is."
               }
             }
           },
